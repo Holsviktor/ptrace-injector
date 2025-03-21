@@ -34,8 +34,8 @@ fn resume(pid : pid_t) {
 }
 fn push_to_tracee(pid : pid_t, data : u64) {
     let mut regs : user_regs_struct = get_registers(pid);
-    //regs.rsp -= 8;
-    //set_registers(pid, &regs);
+    regs.rsp -= 8;
+    set_registers(pid, &regs);
     unsafe {
         if ptrace(libc::PTRACE_POKEDATA, pid, regs.rsp as *mut c_void, data as *mut c_void) == -1 {
             panic!("Failed to write data");
@@ -48,6 +48,37 @@ fn read_qword(pid : pid_t, addr : u64) -> u64 {
         text = ptrace(libc::PTRACE_PEEKDATA, pid, addr as *mut c_void, ptr::null_mut::<u64>()) as u64;
     }
     text
+}
+fn push_string_to_tracee(pid : pid_t, s : &str) {
+    let mut bytestring = s.as_bytes().to_vec();
+    bytestring.push(0);
+
+    while bytestring.len() % 8 != 0 {
+        bytestring.push(0);
+    }
+
+    for chunk in bytestring.chunks_exact(8).rev() {
+        let mut word : u64 = 0;
+
+        // Copy bytes into word little-endian style
+        for (i, &b) in chunk.iter().enumerate() {
+            word |= (b as u64) << (i*8);
+        }
+        push_to_tracee(pid, word);
+    }
+}
+
+// Helper function to decode a u64 into a readable string
+fn u64_to_string(value: u64) -> String {
+    let mut bytes = Vec::new();
+    for i in 0..8 {
+        let byte = ((value >> (i * 8)) & 0xff) as u8;
+        if byte == 0 {
+            break;
+        }
+        bytes.push(byte);
+    }
+    String::from_utf8_lossy(&bytes).to_string()
 }
 
 fn main() {
@@ -78,6 +109,7 @@ fn main() {
         _ => (),
     }
 
+    // Read the sections of tracee's memory
     let section_string : String;
     match std::fs::read_to_string(format!("/proc/{}/maps",pid)) {
         Ok(s) => section_string = s,
@@ -85,16 +117,22 @@ fn main() {
     }
     println!("{}", section_string);
 
+    // Set up stack frame
     let old_regs : user_regs_struct = get_registers(pid);
     let mut new_regs : user_regs_struct = old_regs;
+    let argstring : &str = "aaaabaaacaaadaaa";
+    let string_length : i64 = ((argstring.len() + 1) as f64 / 8.0).ceil() as i64;
 
+    push_to_tracee(pid, old_regs.rbp);
     new_regs.rbp = old_regs.rsp;
-    println!("Old rbp and rsp: {:x}  {:x}", old_regs.rbp, old_regs.rsp);
-    println!("New rbp and rsp: {:x}  {:x}", new_regs.rbp, new_regs.rsp);
 
-    println!("Before write: {:x}", read_qword(pid, old_regs.rsp));
-    push_to_tracee(pid, 0xdeadbeefdeadbeef);
-    println!("After write: {:x}", read_qword(pid, old_regs.rsp));
+    println!("Before write: {:x}", read_qword(pid,new_regs.rsp-16));
+    push_string_to_tracee(pid, argstring);
+    println!("After write: {:x}", read_qword(pid,new_regs.rsp-16));
+    println!("Stringlength: {}", string_length);
+    for i in 0..8 {
+        println!("{}: {}", i*8, u64_to_string(read_qword(pid,new_regs.rsp-8*i)));
+    }
 
     resume(pid);
 
