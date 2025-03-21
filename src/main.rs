@@ -1,4 +1,4 @@
-use libc::{ptrace, waitpid, user_regs_struct, pid_t};
+use libc::{ptrace, waitpid, user_regs_struct, pid_t, c_void};
 use std::process::Command;
 use std::ptr;
 
@@ -32,15 +32,22 @@ fn resume(pid : pid_t) {
         ptrace(libc::PTRACE_CONT, pid, ptr::null_mut::<i8>(), ptr::null_mut::<i8>());
     }
 }
-fn test_exec(pid : pid_t) {
-        interrupt(pid);
-        let mut regs = get_registers(pid);
-        println!("rax: {}", regs.rax as u64);
-        regs.rax += 1;
-        set_registers(pid, &regs);
-
-
-        resume(pid);
+fn push_to_tracee(pid : pid_t, data : u64) {
+    let mut regs : user_regs_struct = get_registers(pid);
+    //regs.rsp -= 8;
+    //set_registers(pid, &regs);
+    unsafe {
+        if ptrace(libc::PTRACE_POKEDATA, pid, regs.rsp as *mut c_void, data as *mut c_void) == -1 {
+            panic!("Failed to write data");
+        }
+    }
+}
+fn read_qword(pid : pid_t, addr : u64) -> u64 {
+    let text : u64;
+    unsafe {
+        text = ptrace(libc::PTRACE_PEEKDATA, pid, addr as *mut c_void, ptr::null_mut::<u64>()) as u64;
+    }
+    text
 }
 
 fn main() {
@@ -62,16 +69,33 @@ fn main() {
     }
     println!("Attached to process");
 
+    // Interrupt process
+    // This could've been done using PTRACE_ATTACH rather than SEIZE
+    // But I chose to do it this way to verify this function is working properly.
     match interrupt(pid) {
         s if libc::WIFEXITED(s) => panic!("Process exited."),
         s if libc::WIFSIGNALED(s) => panic!("Process signaled."),
         _ => (),
     }
 
+    let section_string : String;
     match std::fs::read_to_string(format!("/proc/{}/maps",pid)) {
-        Ok(string) => println!("{}", string),
-        Err(e) => println!("Error encountered when reading from /proc/{}/maps: {}", pid, e),
+        Ok(s) => section_string = s,
+        Err(e) => panic!("Error encountered when reading from /proc/{}/maps: {}", pid, e),
     }
+    println!("{}", section_string);
+
+    let old_regs : user_regs_struct = get_registers(pid);
+    let mut new_regs : user_regs_struct = old_regs;
+
+    new_regs.rbp = old_regs.rsp;
+    println!("Old rbp and rsp: {:x}  {:x}", old_regs.rbp, old_regs.rsp);
+    println!("New rbp and rsp: {:x}  {:x}", new_regs.rbp, new_regs.rsp);
+
+    println!("Before write: {:x}", read_qword(pid, old_regs.rsp));
+    push_to_tracee(pid, 0xdeadbeefdeadbeef);
+    println!("After write: {:x}", read_qword(pid, old_regs.rsp));
+
     resume(pid);
 
     return;
