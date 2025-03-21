@@ -83,8 +83,8 @@ fn u64_to_string(value: u64) -> String {
 
 fn main() {
     // Create child process
-    let child = Command::new("echo")
-        .args(["Hello"])
+    let child = Command::new("/bin/bash")
+        .args(["-c", "echo hello"])
         .spawn()
         .expect("failed to start echo");
     let pid = child.id() as pid_t;
@@ -100,9 +100,10 @@ fn main() {
     }
     println!("Attached to process");
 
+    // Sleep to let the process run load libc
+    std::thread::sleep(std::time::Duration::from_millis(1));
+
     // Interrupt process
-    // This could've been done using PTRACE_ATTACH rather than SEIZE
-    // But I chose to do it this way to verify this function is working properly.
     match interrupt(pid) {
         s if libc::WIFEXITED(s) => panic!("Process exited."),
         s if libc::WIFSIGNALED(s) => panic!("Process signaled."),
@@ -115,24 +116,58 @@ fn main() {
         Ok(s) => section_string = s,
         Err(e) => panic!("Error encountered when reading from /proc/{}/maps: {}", pid, e),
     }
+
+    // Find libc
+    let libc_string_opt = section_string
+        .split([' ', '\n'])
+        .filter(|s| s.contains("libc.so.6"))
+        .collect::<Vec<&str>>();
+    let libc_string = match libc_string_opt.get(0) {
+        Some(s) => s,
+        None => panic!("no libc found"),
+    };
     println!("{}", section_string);
+    let libc_offset_vec = section_string
+        .split('\n')
+        .filter(|s| s.contains("libc.so.6"))
+        .filter(|s| s.contains("r-xp"))
+        .map(|line| line
+            .split('-')
+            .collect::<Vec<&str>>()
+        )
+        .collect::<Vec<Vec<&str>>>();
+
+    let libc_offset = match libc_offset_vec
+        .get(0)
+        .expect("libc found but not in executable.")
+        .get(0) {
+            Some(s) => {
+                match u64::from_str_radix(s, 16) {
+                    Ok(u) => u,
+                    Err(e) => panic!("Error parsing hex: {}", e),
+                }
+            },
+            None => panic!("libc found but not executable?"),
+    };
+    println!("libc offset: {:x}", libc_offset);
 
     // Set up stack frame
     let old_regs : user_regs_struct = get_registers(pid);
     let mut new_regs : user_regs_struct = old_regs;
-    let argstring : &str = "aaaabaaacaaadaaa";
-    let string_length : i64 = ((argstring.len() + 1) as f64 / 8.0).ceil() as i64;
+    let argstring : &str = "ls";
+    let string_length : u64 = ((argstring.len() + 1) as f64 / 8.0).ceil() as u64;
 
     push_to_tracee(pid, old_regs.rbp);
     new_regs.rbp = old_regs.rsp;
-
-    println!("Before write: {:x}", read_qword(pid,new_regs.rsp-16));
     push_string_to_tracee(pid, argstring);
-    println!("After write: {:x}", read_qword(pid,new_regs.rsp-16));
+    new_regs.rax = old_regs.rsp-8-(string_length*8); // Pointer to start of string
+
+    // Print strings in stack frame
     println!("Stringlength: {}", string_length);
-    for i in 0..8 {
-        println!("{}: {}", i*8, u64_to_string(read_qword(pid,new_regs.rsp-8*i)));
+    for i in 2..(string_length + 2) {
+        println!("rsp-{}: {}", i*8, u64_to_string(read_qword(pid,new_regs.rsp-8*i)));
     }
+
 
     resume(pid);
 
