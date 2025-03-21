@@ -36,16 +36,19 @@ fn test_exec(pid : pid_t) {
         interrupt(pid);
         let mut regs = get_registers(pid);
         println!("rax: {}", regs.rax as u64);
+        regs.rax += 1;
         set_registers(pid, &regs);
+
+
         resume(pid);
 }
 
 fn main() {
     // Create child process
     let child = Command::new("echo")
-        .args(["Hello", "World!"])
+        .args(["Hello"])
         .spawn()
-        .expect("failed to start sleep");
+        .expect("failed to start echo");
     let pid = child.id() as pid_t;
     println!("Child pid: {pid}");
 
@@ -59,6 +62,17 @@ fn main() {
     }
     println!("Attached to process");
 
-    test_exec(pid);
+    match interrupt(pid) {
+        s if libc::WIFEXITED(s) => panic!("Process exited."),
+        s if libc::WIFSIGNALED(s) => panic!("Process signaled."),
+        _ => (),
+    }
+
+    match std::fs::read_to_string(format!("/proc/{}/maps",pid)) {
+        Ok(string) => println!("{}", string),
+        Err(e) => println!("Error encountered when reading from /proc/{}/maps: {}", pid, e),
+    }
+    resume(pid);
+
     return;
 }
