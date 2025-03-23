@@ -154,19 +154,21 @@ fn main() {
     // Set up stack frame
     let old_regs : user_regs_struct = get_registers(pid);
     let mut new_regs : user_regs_struct = old_regs;
-    let argstring : &str = "ls";
+    let argstring : &str = "ls -l -a this/directory";
     let string_length : u64 = ((argstring.len() + 1) as f64 / 8.0).ceil() as u64;
 
+    push_to_tracee(pid, old_regs.rip);
     push_to_tracee(pid, old_regs.rbp);
-    new_regs.rbp = old_regs.rsp;
+    new_regs.rbp = old_regs.rsp - 16;
     push_string_to_tracee(pid, argstring);
-    new_regs.rax = old_regs.rsp-8-(string_length*8); // Pointer to start of string
+    new_regs.rax = old_regs.rsp-16-(string_length*8); // Pointer to start of string
 
     // Print strings in stack frame
-    println!("Stringlength: {}", string_length);
-    for i in 2..(string_length + 2) {
-        println!("rsp-{}: {}", i*8, u64_to_string(read_qword(pid,new_regs.rsp-8*i)));
+    println!("Stringlength: {:x}", string_length);
+    for i in 3..(string_length + 3) {
+        println!("rsp-{} | {:x}: \x1b[32m{}\x1b[0m", i*8, new_regs.rsp-8*i, u64_to_string(read_qword(pid,new_regs.rsp-8*i)));
     }
+    println!("Start of string at: \x1b[31m{:x}\x1b[0m", new_regs.rax);
 
 
     resume(pid);
